@@ -1,50 +1,47 @@
-"""gta6-twitch-ccu-forecast-01 entrypoint (round 2): GTA VI Twitch CCU forecaster.
+"""I/O driver for the GTA VI Twitch CCU forecaster.
 
-Reads every case file <id>.in in the input directory and writes one
-forecast <id>.out per case to the output directory. Each forecast gives,
-for hours 2..24 of the release day, five quantiles of that hour's mean
-Twitch viewers in the Grand Theft Auto VI category.
-
-How the grader runs it: `python3 -P -s /bot/main.py` (PYTHONHASHSEED=0)
-in python:3.13-slim, standard library only: no network, no pip packages.
--P keeps this file's directory OFF sys.path, so the sys.path line below
-puts it back first, letting `import forecast` find the model shipped
-beside this file; -s drops user site-packages.
-
-Outside the grader's container, MAKEFUN_INPUT_DIR and
-MAKEFUN_OUTPUT_DIR stand in for /input and /output:
-
-    mkdir -p out && MAKEFUN_INPUT_DIR=input MAKEFUN_OUTPUT_DIR=out python3 main.py
-
-The forecasting model lives in forecast.py; this file is only the I/O
-driver: read cases in name order (so two runs write the same bytes),
-forecast each one, write the compact JSON output.
+Reads every <id>.in in /input (or $MAKEFUN_INPUT_DIR) and writes one
+<id>.out per case to /output (or $MAKEFUN_OUTPUT_DIR).  The model lives in
+forecast.py; this file only does the file handling.  Standard library
+only, deterministic, no network.
 """
 
 import json
 import os
 import sys
-from pathlib import Path
 
-# The grader's -P leaves /bot off sys.path: put it back first, so `import
-# forecast` finds the model shipped beside this file.
-sys.path.insert(0, str(Path(__file__).resolve().parent))
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-import forecast  # noqa: E402  (after the sys.path line above, on purpose)
-
-INPUT_DIR = Path(os.environ.get("MAKEFUN_INPUT_DIR", "/input"))
-OUTPUT_DIR = Path(os.environ.get("MAKEFUN_OUTPUT_DIR", "/output"))
+import forecast
 
 
-def main() -> None:
-    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-    # Every case file, in name order, so two runs write the same bytes.
-    for path in sorted(INPUT_DIR.glob("*.in")):
-        case = json.loads(path.read_text(encoding="utf-8"))
-        result = forecast.forecast(case)
-        (OUTPUT_DIR / f"{path.stem}.out").write_text(
-            json.dumps(result, separators=(",", ":")) + "\n", encoding="utf-8")
+def main():
+    input_dir = os.environ.get("MAKEFUN_INPUT_DIR", "/input")
+    output_dir = os.environ.get("MAKEFUN_OUTPUT_DIR", "/output")
+    os.makedirs(output_dir, exist_ok=True)
+    names = sorted(n for n in os.listdir(input_dir) if n.endswith(".in"))
+    for name in names:
+        case_id = name[:-3]
+        in_path = os.path.join(input_dir, name)
+        out_path = os.path.join(output_dir, case_id + ".out")
+        try:
+            with open(in_path, "r", encoding="utf-8") as fh:
+                case = json.load(fh)
+            result = forecast.forecast_case(case)
+        except Exception:
+            # Never fail the whole run on one bad case: emit the fallback
+            # shape at a print of 1 viewer so the output stays valid.
+            result = {"hours": [
+                {"hour": h,
+                 "q": forecast._quantiles(
+                     1.0, forecast.FALLBACK_SHAPE[h],
+                     forecast.FALLBACK_SPREAD, forecast.DEFAULT_LEVELS)}
+                for h in forecast.HOURS]}
+        with open(out_path, "w", encoding="utf-8") as fh:
+            json.dump(result, fh, separators=(",", ":"))
+            fh.write("\n")
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

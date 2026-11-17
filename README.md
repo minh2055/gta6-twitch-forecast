@@ -11,7 +11,7 @@ everything recorded up to the end of hour 1 — as five quantiles per hour.
 Bounty: [gta6-twitch-ccu-forecast-01 on make.fun](https://make.fun/bounty/gta6-twitch-ccu-forecast-01)
 — $250 over 20 places. This is the **round-2** entry: a better forecaster
 than the round-1 entry in the same repo family (round 1: LOO 0.201 /
-0.177; this entry: LOO 0.180 / 0.164 — see Validation below).
+0.177; this entry: LOO 0.172 / 0.165 — see Validation below).
 
 ## How to run
 
@@ -50,6 +50,11 @@ on the shape pool:
   `preweek` is the mean log viewers in the category 14–7 days before
   release — the category's baseline popularity before launch week.
 
+The ridge penalty applies to the raw predictors (no standardisation):
+with these predictor scales that shrinks the jump slope most — the jump
+is the noisiest predictor, built from one hype-driven hour-0 print —
+while the log-print and preweek slopes are barely penalised.
+
 What the practice data shows: bigger hour-1 prints ramp less (slope about
 −0.05 early, −0.35 at the evening peak); a bigger jump into hour 1 predicts
 a stronger ramp; and a category that was already popular two weeks out
@@ -61,10 +66,10 @@ The fitted coefficients are lightly smoothed across neighbouring hours
 (hours 2 and 24 keep their own fit). The final centre blends the two fits,
 75% extended / 25% base, hedging the third predictor's extrapolation. The
 spread is the empirical SD of the pool's log-ratios at that hour (floored
-0.25, capped 0.9, scaled 0.85, widened a little for hours 2–8 and narrowed
-a little for hours 17–24). Quantiles are log-normal, rounded to whole
-viewers, at least 1, forced non-decreasing. The slope of the minute reads
-inside hour 1 nudges the centres by at most 0.10 log units.
+0.25, capped 0.9, scaled 0.80, narrowed a little for hours 17–24).
+Quantiles are log-normal, rounded to whole viewers, at least 1, forced
+non-decreasing. The slope of the minute reads inside hour 1 nudges the
+centres by at most 0.10 log units.
 
 Fallbacks: no usable comparables → median ramp shape with a wide spread;
 missing hour-0 viewers → pool median jump; missing pre-release history →
@@ -77,17 +82,19 @@ contest's pinball loss on the log scale:
 
 | population | this entry | round 1 | house baseline |
 |---|---|---|---|
-| all 37 comparables | 0.629 | 0.695 | 0.930 |
-| midnight-like (26) | **0.180** | 0.201 | 0.284 |
-| closest analogues (16) | **0.164** | 0.177 | 0.288 |
+| all 37 comparables | 0.641 | 0.695 | 0.930 |
+| midnight-like (26) | **0.172** | 0.201 | 0.284 |
+| closest analogues (16) | **0.165** | 0.177 | 0.288 |
 
 Ideas tried and kept only when they validated better on LOO: the preweek
 predictor (+blend), coefficient smoothing across hours with un-smoothed
-edges, ridge shrinkage, weak-tier launches in the pool, and per-band
-spread multipliers. Ideas tried and dropped: similarity weighting by
-scale/jump/platform, channels-based predictors, pre-release diurnal tilt,
-polynomial terms, empirical residual quantiles, and an early-peak /
-evening-peak mixture — none of them beat the model above on LOO.
+edges, raw-predictor ridge shrinkage (lambda 1.0; beats standardised
+ridge 0.172 vs 0.187 midnight-like), weak-tier launches in the pool, and
+per-band spread multipliers. Ideas tried and dropped: similarity weighting
+by scale/jump/platform, channels-based predictors, pre-release diurnal
+tilt, polynomial terms, empirical residual quantiles, residual-based
+spread, and an early-peak / evening-peak mixture — none of them beat the
+model above on LOO.
 
 ## Files
 
