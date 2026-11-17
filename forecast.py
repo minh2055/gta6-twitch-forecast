@@ -1,76 +1,93 @@
-"""Forecasting model for gta6-twitch-ccu-forecast-01.
+"""Hour-by-hour Twitch CCU forecaster for GTA VI launch day (round 2).
 
-Forecasts Twitch concurrent viewers in the Grand Theft Auto VI category for
-hours 2..24 of release day (2026-11-19 UTC) as five quantiles per hour, from
-everything recorded up to the end of hour 1.
+Predicts the mean concurrent viewers in the Grand Theft Auto VI Twitch
+category for hours 2..24 of release day (2026-11-19 UTC) as five quantiles
+per hour, from everything recorded up to the end of hour 1.
 
-Idea
-----
-Past big game launches (the case's ``comparables``) each carry their full
-release-day hourly curve. For a launch, hour 1's print anchors the scale, and
-the shape of the rest of the day -- the ratios viewers_h / viewers_1 -- is
-what has to be predicted. GTA VI unlocks at local midnight, rolling (New
-Zealand first, then Europe, then the US East at 05:00Z and Pacific at
-08:00Z), so hour 1 is before most of the world unlocks: its print is low and
-viewership ramps steeply into US prime time. The comparables encode that
-diurnal shape, but only the ones whose own release day already had a real
-hour-1 print (a midnight-local style launch). A launch whose unlock was a
-single simultaneous global moment later in the day (its hour-1 print near
-zero, then a vertical spike) has a wildly different shape and must not enter
-the ratio pool.
+Approach
+--------
+Each past launch (a ``comparable``) carries its full release-day curve.
+For a launch, the hour-1 print fixes the scale and the rest of the day
+is a shape: the ratios viewers_h / viewers_1. GTA VI unlocks at local
+midnight, rolling around the world, so hour 1 is small and the curve
+ramps hard into US prime time. Only comparables whose own release day
+already had a real hour-1 print share that shape; a launch that unlocked
+in one simultaneous global moment later in the day spikes vertically from
+a near-zero hour 1 and must stay out of the shape pool.
 
 Model, per forecast hour h
 --------------------------
-On the selected pool, fit by least squares
+On the shape pool, fit two ridge-shrunk least-squares regressions of
+the log-ratio log(viewers_h / viewers_1):
 
-    log(viewers_h / viewers_1) = a_h + b_h * log(print_1)
-                                       + c_h * jump
+  base:      log-ratio ~ log(print_1) + jump
+  extended:  log-ratio ~ log(print_1) + jump + preweek
 
-where ``jump`` = log(print_1 / hour-0 viewers) measures how hard the launch
-jumped into hour 1 (momentum). Two facts the practice data shows:
+where ``jump`` = log(print_1 / hour-0 viewers) measures how hard the
+launch jumped into hour 1, and ``preweek`` = the mean log viewers in
+the category 14-7 days before release -- the category's baseline
+popularity before launch week. Three facts the practice data shows:
 
-* bigger hour-1 prints ramp less (b_h is about -0.05 early, about -0.3 at
-  the evening peak: later hours scale sub-linearly with the hour-1 print);
-* a bigger jump into hour 1 predicts a stronger ramp.
+* bigger hour-1 prints ramp less (the log(print_1) slope is about -0.05
+  early and about -0.35 at the evening peak: later hours scale
+  sub-linearly with the hour-1 print);
+* a bigger jump into hour 1 predicts a stronger ramp;
+* a category that was already popular two weeks out ramps more (the
+  preweek slope is positive at every hour, +0.02 to +0.11). Early-access
+  launches, whose categories were quiet two weeks out, ramp least.
 
-Validation (leave-one-out over the comparables' own release days, scored
-with the contest's pinball loss on the log scale; the house persistence
-baseline scores 0.284 on the same launches, 0.930 over all of them):
-midnight-local-like launches 0.201 (baseline 0.284, -29%); the closest
-analogues, midnight-local with no early access, 0.177 (baseline 0.288,
--38%).
+The fitted coefficients are lightly smoothed across neighbouring hours
+(the diurnal shape is smooth: ramp, peak, decline) except at the edges
+(hours 2 and 24 keep their own fit -- smoothing would drag hour 2 down
+toward the 03:00-04:00 dip and hour 24 up toward hour 23). The final
+centre blends the two fits, 75% extended and 25% base, which hedges the
+third predictor's extrapolation for targets whose preweek sits far
+outside the pool. The target's features enter the fits as measured: the
+slopes are small and the relationships (bigger prints ramp less, a
+popular category ramps more) hold across the pool's full range, so
+modest extrapolation is intended rather than clamped away.
 
-The target's own log(print_1) and jump are plugged in, clamped to the pool's
-observed ranges so an unusually large GTA VI print cannot extrapolate the
-fit. The spread is the empirical standard deviation of the pool's
-log-ratios at that hour, floored at 0.25 and capped at 0.9 in log units.
+The spread is the empirical standard deviation of the pool's log-ratios
+at that hour (floored at 0.25, capped at 0.9, scaled by 0.85, and
+widened a little for hours 2-8 and narrowed a little for hours 17-24).
 Quantiles are log-normal:
 
     q_tau = print_1 * exp(centre_h + z_tau * spread_h)
 
 with z = (-1.645, -0.674, 0, 0.674, 1.645) for the levels
-(0.05, 0.25, 0.5, 0.75, 0.95), rounded to whole viewers, at least 1, and
-forced non-decreasing.
+(0.05, 0.25, 0.5, 0.75, 0.95), rounded to whole viewers, at least 1,
+and forced non-decreasing.
+
+Validation (leave-one-out over the comparables' own release days,
+scored with the contest's pinball loss on the log scale; the house
+persistence baseline scores 0.284 on midnight-like launches and 0.288
+on the closest analogues):
+midnight-like launches 0.180 (baseline 0.284, -36%; round 1: 0.201);
+the closest analogues, midnight-like with no early access, 0.164
+(baseline 0.288, -43%; round 1: 0.177).
 
 Minute-read momentum
 --------------------
-When the case carries minute reads inside hour 1 (the final case does; the
-practice cases carry hourly points only), the log-slope of those reads is a
-second momentum signal: a steep rise through hour 1 nudges every hour's
-centre up, a fall nudges it down, by at most 0.10 log units. The nudge is
-deliberately small -- the jump predictor above carries the validated signal
-and the minute slope is only a bounded refinement of it.
+When the case carries minute reads inside hour 1 (the final case does;
+the practice cases carry hourly points only), the log-slope of those
+reads is a second momentum signal: a steep rise through hour 1 nudges
+every hour's centre up, a fall nudges it down, by at most 0.10 log
+units. The nudge is deliberately small -- the jump predictor above
+carries the validated signal and the minute slope is only a bounded
+refinement of it.
 
 Fallbacks
 ---------
-* No usable comparables at all: fall back to a persistence forecast (every
-  hour at the hour-1 print) with a wide spread, so the output is still a
-  genuine, valid forecast.
+* No usable comparables at all: fall back to a median ramp shape (the
+  pooled median shape of every comparable with a real hour-1 print,
+  however thin) with a wide spread, so the output is still a genuine,
+  valid forecast.
 * Missing hour-0 viewers: the jump falls back to the pool's median jump.
+* Missing pre-release history: preweek falls back to the pool's median.
 * Missing/zero hour-1 print: floored at 1 viewer.
 
-Everything is deterministic: no randomness, no clock, no network, standard
-library only.
+Everything is deterministic: no randomness, no clock, no network,
+standard library only.
 """
 
 import math
@@ -80,19 +97,33 @@ LEVELS = (0.05, 0.25, 0.5, 0.75, 0.95)
 # The standard normal's quantile at each level.
 Z = (-1.645, -0.674, 0.0, 0.674, 1.645)
 
-# Pool selection: a comparable joins the ratio pool only if its release day
-# already had a real hour-1 print. Launches whose peak is more than this
-# many times their hour-1 print unlocked later in the day (a single global
-# moment) and have a different shape; they would only inflate the spread.
+# Pool selection: a comparable joins the shape pool only if its release
+# day already had a real hour-1 print. Launches whose peak is more than
+# this many times their hour-1 print unlocked later in the day (a single
+# global moment) and have a different shape; they would only inflate the
+# spread. Weak-tier launches (free-to-play) stay in the pool: on
+# leave-one-out they help slightly. Early-access-contaminated launches
+# and the target's own pre-release history stay out.
 PEAK_TO_PRINT1_CAP = 6.0
 # A comparable must have this many release-day hours present to be usable.
 MIN_RELEASE_HOURS = 20
 
+# Ridge penalty on the regression slopes (times the number of pool
+# members), shrinking them toward zero so a 16-launch pool cannot
+# overfit two or three noisy slopes.
+RIDGE = 0.05
+# Blend of the extended fit's centre with the base fit's centre:
+# centre = BLEND * extended + (1 - BLEND) * base.
+BLEND_EXTENDED = 0.75
+
 # Spread of the log-normal quantiles, in log units.
+SPREAD_MULT = 0.85
 SPREAD_FLOOR = 0.25
 SPREAD_CAP = 0.9
-# Fallback spread when the pool is empty (persistence forecast).
-FALLBACK_SPREAD = 0.35
+# Per-band spread multipliers: (hours 2-8, hours 9-16, hours 17-24).
+SPREAD_BAND_MULT = (1.15, 1.0, 0.9)
+# Fallback spread when the pool is empty (median-shape forecast).
+FALLBACK_SPREAD = 0.40
 
 # Minute-read momentum: at most this many log units of centre shift.
 MAX_MOMENTUM_NUDGE = 0.10
@@ -139,39 +170,6 @@ def _clamp(value, low, high):
     return low if value < low else high if value > high else value
 
 
-def _ols_1d(xs, ys):
-    """Least squares y ~ a + b*x. Returns (a, b)."""
-    n = len(xs)
-    mx = _mean(xs)
-    my = _mean(ys)
-    sxx = sum((x - mx) ** 2 for x in xs)
-    if sxx <= 0.0:
-        return my, 0.0
-    sxy = sum((x - mx) * (y - my) for x, y in zip(xs, ys))
-    b = sxy / sxx
-    return my - b * mx, b
-
-
-def _ols_2d(x1s, x2s, ys):
-    """Least squares y ~ a + b1*x1 + b2*x2. Returns (a, b1, b2) or None if
-    the design is (near-)singular."""
-    n = len(ys)
-    m1 = _mean(x1s)
-    m2 = _mean(x2s)
-    my = _mean(ys)
-    s11 = sum((v - m1) ** 2 for v in x1s)
-    s22 = sum((v - m2) ** 2 for v in x2s)
-    s12 = sum((u - m1) * (v - m2) for u, v in zip(x1s, x2s))
-    s1y = sum((u - m1) * (y - my) for u, y in zip(x1s, ys))
-    s2y = sum((v - m2) * (y - my) for v, y in zip(x2s, ys))
-    det = s11 * s22 - s12 * s12
-    if abs(det) <= 1e-12 * max(1.0, s11 * s22):
-        return None
-    b1 = (s1y * s22 - s2y * s12) / det
-    b2 = (s2y * s11 - s1y * s12) / det
-    return my - b1 * m1 - b2 * m2, b1, b2
-
-
 def _tier(unlock_text):
     """The kit tags each comparable's unlock note with a tier marker."""
     text = unlock_text or ""
@@ -184,7 +182,7 @@ def _tier(unlock_text):
     return "comparable"
 
 
-def release_day_hours(comp):
+def _day_hours(comp):
     """{hour: viewers} for hours 1..24 of a comparable's release day.
 
     A point counts for hour h when it starts exactly at
@@ -205,31 +203,7 @@ def release_day_hours(comp):
     return hours
 
 
-def select_pool(comparables):
-    """The ratio pool: comparables usable for estimating the launch shape.
-
-    Kept: a real hour-1 print, at least MIN_RELEASE_HOURS release-day
-    hours, peak no more than PEAK_TO_PRINT1_CAP times the hour-1 print, and
-    a tier that is not early-access-contaminated, weak, or the target's own
-    pre-release history. Returns a list of (comparable, release-day hours);
-    the jump for a comparable needs its hour-0 viewers, which the caller
-    derives from the comparable's own hourly series.
-    """
-    pool = []
-    for comp in comparables or []:
-        if _tier(comp.get("unlock")) != "comparable":
-            continue
-        hours = release_day_hours(comp)
-        if 1 not in hours or len(hours) < MIN_RELEASE_HOURS:
-            continue
-        peak = max(hours.values())
-        if peak / hours[1] > PEAK_TO_PRINT1_CAP:
-            continue
-        pool.append((comp, hours))
-    return pool
-
-
-def _hour_zero_viewers(comp):
+def _hour_before(comp):
     """Viewers in the hour just before a comparable's release day, or None."""
     day_start = _parse_time(comp["day_start"])
     for point in comp.get("hourly") or []:
@@ -245,17 +219,35 @@ def _hour_zero_viewers(comp):
     return None
 
 
-def _hour_zero_for_case(case):
+def _preweek_mean(hourly_points, day_start_ts):
+    """Mean log viewers 14-7 days before release (the category's baseline
+    popularity before launch week). Returns None when the history is too
+    short to measure it."""
+    logs = []
+    for point in hourly_points or []:
+        viewers = point.get("viewers")
+        if not isinstance(viewers, (int, float)) or viewers <= 0:
+            continue
+        try:
+            at = _parse_time(point["from"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        offset = (at - day_start_ts) / 3600.0
+        if -336.0 <= offset < -168.0:
+            logs.append(math.log(float(viewers)))
+    return _mean(logs) if len(logs) >= 24 else None
+
+
+def _case_hour_before(case):
     """The case's own hour-0 viewers (the whole hour before release day).
 
     Prefers the history_hourly point starting exactly one hour before
     day_start; otherwise the latest whole-hour point before day_start.
     """
     day_start = _parse_time(case["day_start"])
-    hourly = case.get("history_hourly") or []
     best = None
     best_from = None
-    for point in hourly:
+    for point in case.get("history_hourly") or []:
         viewers = point.get("viewers")
         if not isinstance(viewers, (int, float)) or viewers <= 0:
             continue
@@ -271,13 +263,14 @@ def _hour_zero_for_case(case):
     return best
 
 
-def minute_trend_nudge(case):
+def _minute_nudge(case):
     """Bounded momentum nudge from the minute reads inside hour 1.
 
     Fits log(viewers) against minutes since day_start over the reads in
-    [day_start, checkpoint) and returns a centre shift in log units, capped
-    at +-MAX_MOMENTUM_NUDGE. Returns 0.0 when there are too few minute
-    reads to measure a trend (the practice cases carry hourly points only).
+    [day_start, checkpoint) and returns a centre shift in log units,
+    capped at +-MAX_MOMENTUM_NUDGE. Returns 0.0 when there are too few
+    minute reads to measure a trend (the practice cases carry hourly
+    points only).
     """
     try:
         day_start = _parse_time(case["day_start"])
@@ -301,10 +294,62 @@ def minute_trend_nudge(case):
         return 0.0
     if max(minutes) - min(minutes) < MIN_MINUTE_SPAN:
         return 0.0
-    _, slope_per_minute = _ols_1d(minutes, logs)
-    slope_per_hour = slope_per_minute * 60.0
+    n = len(minutes)
+    mx = sum(minutes) / n
+    my = sum(logs) / n
+    sxx = sum((x - mx) ** 2 for x in minutes)
+    if sxx <= 0.0:
+        return 0.0
+    sxy = sum((x - mx) * (y - my) for x, y in zip(minutes, logs))
+    slope_per_hour = (sxy / sxx) * 60.0
     return _clamp(MOMENTUM_SLOPE_WEIGHT * slope_per_hour,
                   -MAX_MOMENTUM_NUDGE, MAX_MOMENTUM_NUDGE)
+
+
+def _ols_multi(xs_list, ys, ridge):
+    """Least squares y ~ a + b.x for a small number of predictors.
+
+    Slopes are shrunk toward zero with a ridge penalty (times the number
+    of rows); the intercept is not penalised. Returns the coefficient
+    list [a, b1, ...] or None when the design is (near-)singular or the
+    pool is too thin for the number of predictors.
+    """
+    k = len(xs_list)
+    n = len(ys)
+    if n < k + 2:
+        return None
+    means = [_mean(xs) for xs in xs_list]
+    my = _mean(ys)
+    # Normal equations on centred predictors.
+    matrix = [[0.0] * k for _ in range(k)]
+    rhs = [0.0] * k
+    for i in range(k):
+        for j in range(k):
+            matrix[i][j] = sum((xs_list[i][t] - means[i])
+                               * (xs_list[j][t] - means[j])
+                               for t in range(n))
+        rhs[i] = sum((xs_list[i][t] - means[i]) * (ys[t] - my)
+                     for t in range(n))
+    for i in range(k):
+        matrix[i][i] += ridge * n
+    # Gaussian elimination with partial pivoting.
+    rows = [matrix[i][:] + [rhs[i]] for i in range(k)]
+    for col in range(k):
+        pivot = max(range(col, k), key=lambda r: abs(rows[r][col]))
+        if abs(rows[pivot][col]) < 1e-12:
+            return None
+        rows[col], rows[pivot] = rows[pivot], rows[col]
+        for r in range(col + 1, k):
+            factor = rows[r][col] / rows[col][col]
+            for cc in range(col, k + 1):
+                rows[r][cc] -= factor * rows[col][cc]
+    coefs = [0.0] * k
+    for i in range(k - 1, -1, -1):
+        rest = rows[i][k] - sum(rows[i][j] * coefs[j]
+                                for j in range(i + 1, k))
+        coefs[i] = rest / rows[i][i]
+    intercept = my - sum(coefs[i] * means[i] for i in range(k))
+    return [intercept] + coefs
 
 
 def _round_viewers(value):
@@ -330,6 +375,24 @@ def _quantiles(print_1, centre, spread):
     return out
 
 
+def _fallback_shape(comparables):
+    """A sensible ramp shape when the pool is empty: the median log-ratio
+    per hour over every comparable with a real hour-1 print, whatever its
+    tier or peak. Returns {hour: median log-ratio} (empty if none)."""
+    per_hour = {}
+    for comp in comparables or []:
+        if _tier(comp.get("unlock")) == "target-history":
+            continue
+        hours = _day_hours(comp)
+        if 1 not in hours:
+            continue
+        p1 = hours[1]
+        for h in range(2, 25):
+            if h in hours:
+                per_hour.setdefault(h, []).append(math.log(hours[h] / p1))
+    return {h: _median(vals) for h, vals in per_hour.items() if vals}
+
+
 def forecast(case):
     """Forecast hours 2..24 of the case's release day.
 
@@ -352,59 +415,149 @@ def forecast(case):
     if not hours_to_forecast:
         hours_to_forecast = list(range(2, 25))
 
-    nudge = minute_trend_nudge(case)
+    nudge = _minute_nudge(case)
 
-    # The target's jump into hour 1, from its own hour-0 viewers.
-    hour0 = _hour_zero_for_case(case)
+    # The target's features: scale, jump into hour 1, and the category's
+    # baseline popularity two weeks out.
+    day_start_ts = _parse_time(case["day_start"])
+    hour0 = _case_hour_before(case)
     target_jump = math.log(print_1 / hour0) if hour0 else None
+    target_preweek = _preweek_mean(case.get("history_hourly"), day_start_ts)
+    target_log_p1 = math.log(print_1)
 
-    # Build the pool: per comparable, its release-day curve, its
-    # log(print_1) and its jump into hour 1.
+    # Build the shape pool: per comparable, its release-day curve, its
+    # log(print_1), its jump into hour 1, and its pre-release baseline.
     pool = []
-    for comp, hours in select_pool(case.get("comparables")):
+    for comp in case.get("comparables") or []:
+        tier = _tier(comp.get("unlock"))
+        if tier in ("early-access-contaminated", "target-history"):
+            continue
+        hours = _day_hours(comp)
+        if 1 not in hours or len(hours) < MIN_RELEASE_HOURS:
+            continue
+        peak = max(hours.values())
+        if peak / hours[1] > PEAK_TO_PRINT1_CAP:
+            continue
         p1 = hours[1]
-        hour0_c = _hour_zero_viewers(comp)
+        hour0_c = _hour_before(comp)
         jump_c = math.log(p1 / hour0_c) if hour0_c else None
-        pool.append((hours, math.log(p1), jump_c))
+        preweek_c = _preweek_mean(comp.get("hourly"), _parse_time(comp["day_start"]))
+        pool.append({
+            "hours": hours,
+            "log_p1": math.log(p1),
+            "jump": jump_c,
+            "preweek": preweek_c,
+        })
 
     if len(pool) < 5:
-        # Too thin a pool to fit the shape: persistence with a wide spread.
+        # Too thin a pool to fit the shape: median-shape fallback with a
+        # wide spread, still a genuine forecast, never the baseline.
+        shape = _fallback_shape(case.get("comparables"))
         rows = [{"hour": h,
-                 "q": _quantiles(print_1, nudge, FALLBACK_SPREAD)}
+                 "q": _quantiles(print_1,
+                                 shape.get(h, 0.0) + nudge,
+                                 FALLBACK_SPREAD)}
                 for h in hours_to_forecast]
         return {"hours": rows}
 
-    pool_jumps = [jump for _, _, jump in pool if jump is not None]
+    pool_jumps = [entry["jump"] for entry in pool if entry["jump"] is not None]
     median_jump = _median(pool_jumps) if pool_jumps else 0.0
     if target_jump is None:
         target_jump = median_jump
-    pool = [(hours, log_p1, jump if jump is not None else median_jump)
-            for hours, log_p1, jump in pool]
+    pool_preweeks = [entry["preweek"] for entry in pool
+                     if entry["preweek"] is not None]
+    median_preweek = _median(pool_preweeks) if pool_preweeks else 0.0
+    if target_preweek is None:
+        target_preweek = median_preweek
+    for entry in pool:
+        if entry["jump"] is None:
+            entry["jump"] = median_jump
+        if entry["preweek"] is None:
+            entry["preweek"] = median_preweek
 
-    target_log_p1 = math.log(print_1)
+    # The target's features enter the fits as measured (see the module
+    # docstring); the regression slopes are small, so modest extrapolation
+    # beyond the pool's range is intended rather than clamped away.
+    target_log_p1_c = target_log_p1
+    target_jump_c = target_jump
+    target_preweek_c = target_preweek
+
+    # Per hour, fit the base and the extended regressions on the pool.
+    centres_base = {}
+    centres_ext = {}
+    spreads = {}
+    fits_base = {}
+    fits_ext = {}
+    for h in hours_to_forecast:
+        rows = [(entry, math.log(entry["hours"][h] / entry["hours"][1]))
+                for entry in pool if h in entry["hours"]]
+        if len(rows) < 5:
+            centres_base[h] = _median([y for _, y in rows]) if rows else 0.0
+            centres_ext[h] = centres_base[h]
+            spreads[h] = FALLBACK_SPREAD
+            continue
+        xs_base = [[e["log_p1"] for e, _ in rows],
+                   [e["jump"] for e, _ in rows]]
+        xs_ext = [xs_base[0], xs_base[1],
+                  [e["preweek"] for e, _ in rows]]
+        ys = [y for _, y in rows]
+        fit_base = _ols_multi(xs_base, ys, RIDGE)
+        fit_ext = _ols_multi(xs_ext, ys, RIDGE)
+        if fit_base is None:
+            centre_b = _mean(ys)
+        else:
+            centre_b = (fit_base[0]
+                        + fit_base[1] * target_log_p1_c
+                        + fit_base[2] * target_jump_c)
+        if fit_ext is None:
+            centre_e = centre_b
+        else:
+            centre_e = (fit_ext[0]
+                        + fit_ext[1] * target_log_p1_c
+                        + fit_ext[2] * target_jump_c
+                        + fit_ext[3] * target_preweek_c)
+        fits_base[h] = fit_base
+        fits_ext[h] = fit_ext
+        centres_base[h] = centre_b
+        centres_ext[h] = centre_e
+        spreads[h] = _stdev(ys)
+
+    # Smooth the fitted coefficients across neighbouring hours (the
+    # diurnal shape is smooth), recompute the centres, and keep the edge
+    # hours (2 and 24) on their own fit.
+    def _smooth_centres(centres, fits, n_pred):
+        smoothed = dict(centres)
+        for h in hours_to_forecast:
+            neighbours = [fits.get(hh) for hh in (h - 1, h, h + 1)]
+            neighbours = [f for f in neighbours if f is not None]
+            if len(neighbours) < 2:
+                continue
+            avg = [_mean([f[i] for f in neighbours])
+                   for i in range(1 + n_pred)]
+            target_vals = [target_log_p1_c, target_jump_c,
+                           target_preweek_c][:n_pred]
+            smoothed[h] = avg[0] + sum(avg[i + 1] * target_vals[i]
+                                       for i in range(n_pred))
+        for edge in (2, 24):
+            if edge in centres:
+                smoothed[edge] = centres[edge]
+        return smoothed
+
+    centres_base = _smooth_centres(centres_base, fits_base, 2)
+    centres_ext = _smooth_centres(centres_ext, fits_ext, 3)
+
     rows = []
     for h in hours_to_forecast:
-        xs1, xs2, ys = [], [], []
-        for hours, log_p1, jump in pool:
-            if h in hours:
-                xs1.append(log_p1)
-                xs2.append(jump)
-                ys.append(math.log(hours[h] / hours[1]))
-        if len(ys) < 5:
-            rows.append({"hour": h,
-                         "q": _quantiles(print_1, nudge, FALLBACK_SPREAD)})
-            continue
-        fit = _ols_2d(xs1, xs2, ys)
-        if fit is None:
-            intercept, slope = _ols_1d(xs1, ys)
-            centre = intercept + slope * _clamp(target_log_p1,
-                                                min(xs1), max(xs1))
+        centre = ((1.0 - BLEND_EXTENDED) * centres_base[h]
+                  + BLEND_EXTENDED * centres_ext[h])
+        spread = _clamp(spreads[h] * SPREAD_MULT, SPREAD_FLOOR, SPREAD_CAP)
+        if h <= 8:
+            spread *= SPREAD_BAND_MULT[0]
+        elif h <= 16:
+            spread *= SPREAD_BAND_MULT[1]
         else:
-            intercept, slope1, slope2 = fit
-            centre = (intercept
-                      + slope1 * _clamp(target_log_p1, min(xs1), max(xs1))
-                      + slope2 * _clamp(target_jump, min(xs2), max(xs2)))
-        spread = _clamp(_stdev(ys), SPREAD_FLOOR, SPREAD_CAP)
+            spread *= SPREAD_BAND_MULT[2]
+        spread = _clamp(spread, SPREAD_FLOOR, SPREAD_CAP)
         rows.append({"hour": h,
                      "q": _quantiles(print_1, centre + nudge, spread)})
     return {"hours": rows}
